@@ -1395,7 +1395,7 @@ func NewNodeWithConfig(bc Chain, cfg Config) (*Node, error) {
     go node.startKingListCleanup()
     go func() {
         time.Sleep(2 * time.Second)
-        node.logger.Warn("STARTUP: Triggering immediate sync check")
+        //node.logger.Warn("STARTUP: Triggering immediate sync check")
         node.forceInitialSync()
     }()
 
@@ -2448,7 +2448,7 @@ func (n *Node) recordSyncAttempt(pid peer.ID) {
 }
 
 func (n *Node) forceInitialSync() {
-    n.logger.Warn("FORCE INITIAL SYNC: Checking all peers")
+   // n.logger.Warn("FORCE INITIAL SYNC: Checking all peers")
 
     // Check all peers and find the highest one
     var bestPeer peer.ID
@@ -3894,7 +3894,7 @@ func (n *Node) processKingRotationEvent(event *KingRotationEvent, source peer.ID
 func (n *Node) BroadcastCurrentKingConfig() {
     mgr := n.chain.GetRotatingKingManager()
     if mgr == nil {
-        n.logger.Warn("Cannot broadcast king config: manager not available")
+        //n.logger.Warn("Cannot broadcast king config: manager not available")
         return
     }
 
@@ -3903,7 +3903,7 @@ func (n *Node) BroadcastCurrentKingConfig() {
 
     // Don't broadcast empty lists
     if len(currentList) == 0 {
-        n.logger.Warn("Cannot broadcast empty king list")
+      //  n.logger.Warn("Cannot broadcast empty king list")
         return
     }
 
@@ -4040,7 +4040,7 @@ func (n *Node) syncKingConfigurationOnStartup() {
     n.processMu.Unlock()
 
     if mgr == nil {
-        n.logger.Warn("No rotating king manager")
+        //n.logger.Warn("No rotating king manager")
         return
     }
 
@@ -4055,7 +4055,7 @@ func (n *Node) syncKingConfigurationOnStartup() {
     // If we have peers, check if we need to sync
     peers := n.Peers()
     if len(peers) == 0 {
-        n.logger.Warn("No peers for configuration sync")
+        //n.logger.Warn("No peers for configuration sync")
         return
     }
 
@@ -4160,7 +4160,7 @@ func (n *Node) ForceDatabaseSync() {
 }
 
 func (n *Node) TriggerManualDBSync() {
-    n.logger.Warn("MANUAL DATABASE SYNC TRIGGERED")
+    //n.logger.Warn("MANUAL DATABASE SYNC TRIGGERED")
     n.performDBSyncWithPeers()
 }
 
@@ -4374,7 +4374,7 @@ func (n *Node) broadcastDBSyncStatus() {
 func (n *Node) sendDBSyncStatusBroadcast(status DBSyncStatus) {
     data, err := json.Marshal(status)
     if err != nil {
-        n.logger.Warnf("Failed to marshal DB sync status: %v", err)
+        //n.logger.Warnf("Failed to marshal DB sync status: %v", err)
         return
     }
 
@@ -4383,7 +4383,7 @@ func (n *Node) sendDBSyncStatusBroadcast(status DBSyncStatus) {
     copy(msg[1:], data)
 
     if err := n.dbSyncTopic.Publish(n.ctx, msg); err != nil {
-        n.logger.Warnf("Failed to publish DB sync status: %v", err)
+        //n.logger.Warnf("Failed to publish DB sync status: %v", err)
     } else {
         n.logger.Debugf("📤 Broadcast DB sync status: height=%d, syncing=%v",
             status.LastSyncedBlock, status.IsSyncing)
@@ -4437,7 +4437,7 @@ func (n *Node) CheckIfConfigurationSyncNeeded() {
     n.processMu.Unlock()
 
     if mgr == nil {
-        n.logger.Warn("No rotating king manager")
+        //n.logger.Warn("No rotating king manager")
         return
     }
 

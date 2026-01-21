@@ -804,13 +804,11 @@ func (ms *PosMiningState) GetNextMiningSlot(bc *chain.Blockchain) (uint64, time.
     return currentHeight + estimatedBlocks, estimatedTime, nil
 }
 
-// calculateBlockReward calculates the block reward (simplified - adjust based on your actual reward logic)
+
 func calculateBlockReward(height uint64, bc *chain.Blockchain) *big.Int {
-    // Base block reward (adjust based on your blockchain's reward schedule)
-    baseReward := new(big.Int).Mul(big.NewInt(1), big.NewInt(1e18)) // 1 ANTD
+    baseReward := new(big.Int).Mul(big.NewInt(200), big.NewInt(1e18)) // 200 ANTD
     
-    // Optional: implement halving or other reward schedule
-    // Example: halve every 1,000,000 blocks
+    // TODO:look into this
     if height > 0 && height%1000000 == 0 {
         baseReward.Div(baseReward, big.NewInt(2))
     }

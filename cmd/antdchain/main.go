@@ -364,7 +364,7 @@ func main() {
             &cli.IntFlag{Name: "rpc-port", Value: 8089, Usage: "JSON-RPC port"},
             &cli.IntFlag{Name: "web-port", Value: 8090, Usage: "Web interface port"},
             &cli.IntFlag{Name: "p2p-port", Value: 30343, Usage: "P2P port"},
-            &cli.StringFlag{Name: "bootstrap", Value: "/ip4/45.87.80.81/tcp/30343/p2p/12D3KooWBsFj7NDQey6HopWgs57zW7GHsMVsnX21zRpDygvh9rTR", Usage: "Bootstrap nodes"},
+            &cli.StringFlag{Name: "bootstrap", Value: "/ip4/129.151.164.223/tcp/30343/p2p/12D3KooWNQMrzwLnDxL8NHMpYuTCpZja3K4AXJDrW2NzSPsGdERC", Usage: "Bootstrap nodes"},
             &cli.BoolFlag{Name: "startmining", Usage: "Start PoS mining"},
             &cli.BoolFlag{Name: "console", Usage: "Open console"},
             &cli.BoolFlag{Name: "no-web", Usage: "Disable web interface"},
