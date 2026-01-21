@@ -1351,7 +1351,7 @@ func CreateSampleConfig(outputPath string, actualGenesisHash common.Hash) error 
                 Timeout:    30 * time.Second,
                 RetryCount: 3,
                 PublicKeys: []string{
-                    "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC/O+4ce7lf7FA4tBdkeSQ4YztRIFeREQjjIF54DLso99cBxEvg+2kJNsLvzDHHDxDNLT5G8KPXKg6oAOvvnA6/3WHH9movsP/nl4mGM5iYSQi/jm2KO3Z4Q/pKoj0zgS42s7fSd474o/VGZpZ8wkxMHHWYqgs8v0EXzMPMjdrQW8XesZSwZGygNsYqDducamXN3GmJPRWmIhqQBExWHggQFsQ9jsJyQ/emd7LReMcx8+9vLmyvIrdKvJhXbEE8+b0ax0Hz+82uBmP/Mo/RsJE6MphJFZ9en6OhCgBGi5oJL+ps6AJwu3Lk9wMm9wvFyEGWxUY+Kw4/7QvzUAg7QFZ1",
+                    "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCgEzkBc7eqa1P3CuF3DlqeR1hgor7ulrd745KrL59qleThH/KaEg6cnkhsvDpTzDQpKeHs/MDGUyb/5IoKbKglGPLaPJOiEniwmVN4+dOT7om4EaFVxkAxQecHyKn8XIW6VBnUPqWW8gHdeF9q7E5p247Xec9gqM7XUFwm6N1lm9GM91f4CqBs8GKElS/477fjzceIQBWaRfszt+dKJ7D2xJ8JylMZsstx+6t1vuDTdNiMkvqy0rCgYBdf1ttXFdDHvquku7ARbGqNjKeOtm2dC7AqzklqpRn4AAT/k3FhS2AtUIhWckH5vaB7HQUkQaVRAUGDgDp0GZvgO3ziKxxN",
                 },
                 ChainID: "antdchain-mainnet",
             },
