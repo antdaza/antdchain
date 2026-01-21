@@ -1,0 +1,39 @@
+{{define "content"}}
+<div class="dashboard">
+    <h1>Dashboard</h1>
+    
+    <div class="stats-grid">
+        <div class="stat-card">
+            <h3>Block Height</h3>
+            <div class="stat-value" id="stat-height">0</div>
+        </div>
+        <div class="stat-card">
+            <h3>Network Hashrate</h3>
+            <div class="stat-value" id="stat-hashrate">0 H/s</div>
+        </div>
+        <div class="stat-card">
+            <h3>Mempool Size</h3>
+            <div class="stat-value" id="stat-mempool">0 txs</div>
+        </div>
+        <div class="stat-card">
+            <h3>Connected Peers</h3>
+            <div class="stat-value" id="stat-peers">0</div>
+        </div>
+    </div>
+    
+    <div class="row">
+        <div class="col-6">
+            <div class="card">
+                <h3>Latest Blocks</h3>
+                <div id="latest-blocks">Loading...</div>
+            </div>
+        </div>
+        <div class="col-6">
+            <div class="card">
+                <h3>Latest Transactions</h3>
+                <div id="latest-transactions">Loading...</div>
+            </div>
+        </div>
+    </div>
+</div>
+{{end}}

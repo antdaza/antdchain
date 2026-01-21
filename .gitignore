@@ -1,0 +1,19 @@
+# Binaries
+build
+antdchain-data/
+*.exe
+*.out
+
+# Build directories
+bin/
+dist/
+
+# Logs
+*.log
+
+# IDE folders
+.vscode/
+.idea/
+
+# Go build cache
+/go/pkg/
