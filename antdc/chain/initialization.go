@@ -166,32 +166,6 @@ func NewBlockchain(statePath string, miner common.Address) (*Blockchain, error) 
 	}
 
 	// ====================
-	// INITIALIZE CHECKPOINT MANAGER
-	// ====================
-	log.Printf("[blockchain] Initializing checkpoint manager...")
-
-	// Create checkpoint config if it doesn't exist
-	checkpointConfigPath := filepath.Join(statePath, "checkpoints.json")
-	nodeName := fmt.Sprintf("ANTDChain Node - %s", miner.Hex()[:8])
-
-	if err := createDefaultCheckpointConfig(checkpointConfigPath, nodeName); err != nil {
-		log.Printf("[blockchain] Warning: Failed to create checkpoint config: %v", err)
-	}
-
-	var checkpointMgr *checkpoints.Checkpoints
-
-        genesisHash := common.HexToHash("0x4cdf2c8baefcbb2ac657069111fc76c2e9990e0ca5f1b5a226e040d2003721de")
-
-        checkpointMgr, err = checkpoints.NewCheckpoints(statePath, checkpointConfigPath, genesisHash)
-       if err != nil {
-                log.Printf("[blockchain] Warning: Checkpoint manager initialization failed: %v", err)
-        // Continue without checkpoint functionality
-        checkpointMgr = nil
-       } else {
-               log.Printf("[blockchain] Checkpoint manager initialized with genesis hash: %s", genesisHash.Hex())
-       }
-
-	// ====================
 	// CREATE CACHES (FOR HOT BLOCKS ONLY)
 	// ====================
 	log.Printf("[blockchain] Creating LRU caches...")
@@ -220,7 +194,7 @@ func NewBlockchain(statePath string, miner common.Address) (*Blockchain, error) 
 		state:               stateDb,
 		txPool:              nil,
 		pow:                 nil,
-		checkpoints:         checkpointMgr,
+//		checkpoints:         checkpointMgr,
 		statePath:           statePath,
 		rewardDistributor:   nil,
 		governance:          nil,
