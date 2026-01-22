@@ -600,6 +600,11 @@ func (c *Checkpoints) loadCheckpointsFromConfig() {
 }
 
 func (c *Checkpoints) ValidateBlock(height uint64, blockHash common.Hash) error {
+
+       if c == nil {
+         return nil
+        }
+
         if !c.initialized || !c.genesisValid {
                 return errors.New("checkpoint manager not properly initialized")
         }

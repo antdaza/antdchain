@@ -313,9 +313,14 @@ func (n *Node) BroadcastBlock(b *block.Block) error {
     }
 
     // Validate checkpoint
-    if err := n.chain.Checkpoints().ValidateBlock(b.Header.Number.Uint64(), b.Hash()); err != nil {
+    checkpointManager := n.chain.Checkpoints()
+    if checkpointManager != nil {
+    if err := checkpointManager.ValidateBlock(b.Header.Number.Uint64(), b.Hash()); err != nil {
         n.logger.Warnf("Checkpoint rejected block %d: %v", b.Header.Number.Uint64(), err)
         return fmt.Errorf("checkpoint validation failed: %w", err)
+       }
+     } else {
+      n.logger.Debug("Checkpoint manager not available, skipping validation")
     }
 
     data, err := json.Marshal(b)
