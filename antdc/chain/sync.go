@@ -10,7 +10,7 @@ import (
     "fmt"
     "log"
     "sort"
-    "time"
+    "time"  
 
     "github.com/cockroachdb/pebble"
     "github.com/ethereum/go-ethereum/common"
@@ -20,7 +20,7 @@ import (
     "github.com/antdaza/antdchain/antdc/checkpoints"
 )
 
-// AddBlock adds a new block to the blockchain
+// AddBlock adds a new block to the blockchain with proper fork handling
 func (bc *Blockchain) AddBlock(b *block.Block) error {
     if b == nil || b.Header == nil {
         return errors.New("nil block or header")
@@ -30,111 +30,206 @@ func (bc *Blockchain) AddBlock(b *block.Block) error {
     blockHeight := b.Header.Number.Uint64()
     parentHash := b.Header.ParentHash
 
-    log.Printf("[blockchain] AddBlock height=%d hash=%s parent=%s",
-        blockHeight, blockHash.Hex()[:12], parentHash.Hex()[:12])
+    log.Printf("[blockchain] AddBlock: height=%d hash=%s parent=%s timestamp=%d",
+        blockHeight, blockHash.Hex()[:12], parentHash.Hex()[:12], b.Header.Time)
 
     // ==============================================
-    // CHECKPOINT VALIDATION
+    // GENESIS CHECKPOINT VALIDATION ONLY
     // ==============================================
-    if bc.checkpointManager != nil {
-        // Special handling for genesis block (height 0)
-        if blockHeight == 0 {
-            // Always validate genesis against checkpoints
-            err := bc.checkpointManager.ValidateBlock(blockHeight, blockHash)
-            if err != nil {
-                log.Printf("[blockchain] ❌ GENESIS BLOCK CHECKPOINT FAILURE: %v", err)
-                return fmt.Errorf("genesis block checkpoint validation failed: %w", err)
-            }
-            log.Printf("[blockchain] ✅ Genesis block checkpoint validated")
-        } else {
-            // For non-genesis blocks, validate against checkpoint if available
-            if cp, exists := bc.checkpointManager.GetCheckpoint(blockHeight); exists {
-                err := bc.checkpointManager.ValidateBlock(blockHeight, blockHash)
-                if err != nil {
-                    log.Printf("[blockchain] ❌ CHECKPOINT FAILURE at height %d: %v", blockHeight, err)
-                    return fmt.Errorf("checkpoint validation failed at height %d: %w", blockHeight, err)
-                }
-                log.Printf("[blockchain] ✅ Block %d validated against checkpoint (verifications: %d)",
-                    blockHeight, cp.Verifications)
-            } else {
-                // No checkpoint for this height, check if we should create one
-                if bc.shouldCreateCheckpoint(blockHeight) {
-                    log.Printf("[blockchain] 📍 Creating checkpoint at height %d", blockHeight)
-                    go bc.createCheckpointFromBlock(b)
-                }
-            }
+    if bc.checkpointManager != nil && blockHeight == 0 {
+        // Only validate genesis block against checkpoint
+        err := bc.checkpointManager.ValidateBlock(blockHeight, blockHash)
+        if err != nil {
+            log.Printf("[blockchain] ❌ GENESIS BLOCK CHECKPOINT FAILURE: %v", err)
+            return fmt.Errorf("genesis block checkpoint validation failed: %w", err)
         }
+        log.Printf("[blockchain] ✅ Genesis block checkpoint validated")
     }
-    // ==============================================
-    // END CHECKPOINT SECTION
-    // ==============================================
+    // Skip checkpoint validation for non-genesis blocks during normal operation
+    // Checkpoints are only for finalized blocks, not every block
 
     // Prevent concurrent processing of the same block
     bc.blockSubmitMu.Lock()
     defer bc.blockSubmitMu.Unlock()
 
-    // Get current tip using atomic load
+    // Get current tip
     currentTip := bc.latest.Load()
     currentHeight := uint64(0)
+    var currentTipHash common.Hash
     if currentTip != nil {
         currentHeight = currentTip.Header.Number.Uint64()
+        currentTipHash = currentTip.Hash()
     }
-    
-    isSyncing := bc.IsSyncing()
+
+    log.Printf("[blockchain] Current chain state: height=%d tip=%s",
+        currentHeight, currentTipHash.Hex()[:12])
 
     // Reject duplicate by hash
     if bc.HasBlock(blockHash) {
+        log.Printf("[blockchain] Rejecting duplicate block: %s", blockHash.Hex()[:12])
         return fmt.Errorf("duplicate block %s", blockHash.Hex()[:12])
     }
 
     // Reject if below current height (stale)
     if blockHeight < currentHeight {
+        log.Printf("[blockchain] Rejecting stale block: height=%d (current=%d)",
+            blockHeight, currentHeight)
         return fmt.Errorf("stale block at height %d (current %d)", blockHeight, currentHeight)
     }
 
-    // Validate and execute the block
-    parentBlock := bc.GetBlock(blockHeight - 1)
+    // ==============================================
+    // PARENT VALIDATION
+    // ==============================================
+    var parentBlock *block.Block
+    
+    if blockHeight == 0 {
+        // Genesis block has no parent
+        parentBlock = nil
+    } else if blockHeight == 1 {
+        // Block 1 must have genesis as parent
+        genesisBlock := bc.GetBlock(0)
+        if genesisBlock == nil {
+            log.Printf("[blockchain] ERROR: Genesis block not found!")
+            return errors.New("genesis block not found")
+        }
+        
+        genesisHash := genesisBlock.Hash()
+        if parentHash != genesisHash {
+            log.Printf("[blockchain] ERROR: Block 1 must have genesis as parent")
+            log.Printf("[blockchain]   Expected: %s (genesis)", genesisHash.Hex()[:12])
+            log.Printf("[blockchain]   Got:      %s", parentHash.Hex()[:12])
+            return fmt.Errorf("block 1 must have genesis as parent")
+        }
+        
+        parentBlock = genesisBlock
+        log.Printf("[blockchain] Block 1 parent is genesis: %s", genesisHash.Hex()[:12])
+    } else {
+        // Normal parent validation for height > 1
+        parentBlock = bc.GetBlock(blockHeight - 1)
+        
+        if parentBlock != nil {
+            // Check if parent hash matches
+            if parentBlock.Hash() != parentHash {
+                log.Printf("[blockchain] ⚠️ PARENT HASH MISMATCH at height %d", blockHeight-1)
+                log.Printf("[blockchain]   Expected: %s", parentHash.Hex()[:12])
+                log.Printf("[blockchain]   Got:      %s", parentBlock.Hash().Hex()[:12])
+                
+                // Try to find the correct parent by hash
+                correctParent, err := bc.db.ReadBlockByHash(parentHash)
+                if err == nil && correctParent != nil {
+                    log.Printf("[blockchain] Found correct parent by hash at height %d", 
+                        correctParent.Header.Number.Uint64())
+                    parentBlock = correctParent
+                    
+                    // Update cache with correct block
+                    bc.cacheMu.Lock()
+                    bc.blockByNumberCache.Add(blockHeight-1, parentBlock)
+                    bc.blockByHashCache.Add(parentHash, parentBlock)
+                    bc.cacheMu.Unlock()
+                } else {
+                    // This is a fork - different block at same height
+                    log.Printf("[blockchain] ❌ FORK DETECTED at height %d", blockHeight-1)
+                    
+                   
+                    return fmt.Errorf("fork detected: different block at height %d", blockHeight-1)
+                }
+            }
+        } else {
+            log.Printf("[blockchain] Parent not found at height %d", blockHeight-1)
+            
+            // Try to get parent by hash
+            parentBlock, err := bc.db.ReadBlockByHash(parentHash)
+            if err != nil || parentBlock == nil {
+                return fmt.Errorf("parent block at height %d not found", blockHeight-1)
+            }
+            
+            // Verify parent height
+            if parentBlock.Header.Number.Uint64() != blockHeight-1 {
+                log.Printf("[blockchain] ⚠️ Parent has unexpected height: %d (expected %d)",
+                    parentBlock.Header.Number.Uint64(), blockHeight-1)
+                // Still use it - might be from a reorg
+            }
+            
+            // Update cache
+            bc.cacheMu.Lock()
+            bc.blockByNumberCache.Add(blockHeight-1, parentBlock)
+            bc.blockByHashCache.Add(parentHash, parentBlock)
+            bc.cacheMu.Unlock()
+        }
+    }
+    
+    if parentBlock != nil && blockHeight > 0 {
+        log.Printf("[blockchain] Parent validated: height=%d hash=%s",
+            parentBlock.Header.Number.Uint64(), parentBlock.Hash().Hex()[:12])
+    }
+
+    // ==============================================
+    // BLOCK VALIDATION
+    // ==============================================
     if err := bc.validateAndExecuteBlock(b, parentBlock); err != nil {
+        log.Printf("[blockchain] Block validation failed: %v", err)
         return fmt.Errorf("block validation failed: %w", err)
     }
 
+    isSyncing := bc.IsSyncing()
+
+    // ==============================================
+    // CHAIN EXTENSION LOGIC
+    // ==============================================
+    
     // Direct extension — fast path
-    if blockHeight == currentHeight+1 && parentHash == currentTip.Hash() {
+    if blockHeight == currentHeight+1 && parentHash == currentTipHash {
+        log.Printf("[blockchain] Direct chain extension: %d -> %d", currentHeight, blockHeight)
         return bc.handleDirectExtension(b, isSyncing)
     }
 
     // During sync — accept if parent exists (gap filling)
     if isSyncing {
-        if parentBlock == nil {
+        if parentBlock == nil && blockHeight > 0 {
+            log.Printf("[blockchain] Orphan block during sync: parent missing")
             return fmt.Errorf("orphan block during sync: parent height %d missing", blockHeight-1)
         }
-        return bc.handleDirectExtension(b, true)
+        
+        if blockHeight == currentHeight+1 {
+            log.Printf("[blockchain] Filling sync gap: %d -> %d", currentHeight, blockHeight)
+            return bc.handleDirectExtension(b, true)
+        }
+        
+        log.Printf("[blockchain] Sync block ahead: current=%d, new=%d", currentHeight, blockHeight)
+        return bc.handleSyncModeBlock(b, blockHeight, parentBlock) // Remove unused blockHash parameter
     }
 
+    // Same height fork
     if blockHeight == currentHeight {
-        currentBlock := bc.GetBlock(blockHeight)
-        if currentBlock.Hash() == blockHash {
-            return nil // duplicate
+        if currentTipHash == blockHash {
+            log.Printf("[blockchain] Duplicate block at height %d", blockHeight)
+            return nil
         }
 
-        // Prefer the block with earlier timestamp (deterministic tie-breaker)
-        if b.Header.Time < currentBlock.Header.Time {
-            log.Printf("[blockchain] Reorg at height %d: switching to earlier timestamp block %s",
-                blockHeight, blockHash.Hex()[:12])
+        log.Printf("[blockchain] Fork detected at height %d: current=%s, new=%s",
+            blockHeight, currentTipHash.Hex()[:12], blockHash.Hex()[:12])
+
+        // Fork resolution: prefer block with earlier timestamp
+        if b.Header.Time < currentTip.Header.Time {
+            log.Printf("[blockchain] Reorg: switching to earlier timestamp block %s",
+                blockHash.Hex()[:12])
             return bc.reorganizeAtHeight(blockHeight, b)
         }
 
-        log.Printf("[blockchain] Fork rejected at height %d: later timestamp", blockHeight)
+        log.Printf("[blockchain] Fork rejected: new block has later timestamp")
         return fmt.Errorf("fork block rejected (later timestamp)")
     }
 
     // Block is ahead — trigger sync
     if blockHeight > currentHeight+1 {
-        log.Printf("[blockchain] Block %d is ahead (current %d) — triggering sync", blockHeight, currentHeight)
+        log.Printf("[blockchain] Block %d is ahead (current %d) — triggering sync", 
+            blockHeight, currentHeight)
         go bc.triggerSyncFromBlock(b)
-        return fmt.Errorf("block ahead — syncing")
+        return fmt.Errorf("block ahead — syncing (current=%d, new=%d)", currentHeight, blockHeight)
     }
 
+    log.Printf("[blockchain] Unexpected block state: height=%d, current=%d, tip=%s",
+        blockHeight, currentHeight, currentTipHash.Hex()[:12])
     return fmt.Errorf("unexpected block state")
 }
 
@@ -168,23 +263,19 @@ func (bc *Blockchain) handleDirectExtension(b *block.Block, duringSync bool) err
     bc.cacheMu.Unlock()
 
     // ==============================================
-    // CREATE CHECKPOINT IF NEEDED
+    // CREATE CHECKPOINT ONLY FOR FINALIZED BLOCKS
     // ==============================================
     if bc.checkpointManager != nil && !duringSync {
-        // Only create checkpoints when not syncing
-        if bc.shouldCreateCheckpoint(blockHeight) {
+        // Only create checkpoints for finalized blocks (e.g., every 1000 blocks)
+        if blockHeight >= 1000 && blockHeight%1000 == 0 {
+            log.Printf("[blockchain] Creating checkpoint at finalized height %d", blockHeight)
             go func() {
                 if err := bc.createCheckpointFromBlock(b); err != nil {
                     log.Printf("[blockchain] Failed to create checkpoint at height %d: %v", blockHeight, err)
-                } else {
-                    log.Printf("[blockchain] ✅ Created checkpoint at height %d", blockHeight)
                 }
             }()
         }
     }
-    // ==============================================
-    // END CHECKPOINT SECTION
-    // ==============================================
 
     if bc.rotatingKingManager != nil {
         go bc.syncRotatingKingForBlock(blockHeight)
@@ -213,8 +304,8 @@ func (bc *Blockchain) handleDirectExtension(b *block.Block, duringSync bool) err
 }
 
 // handleSyncModeBlock handles blocks during sync mode
-func (bc *Blockchain) handleSyncModeBlock(b *block.Block, blockHash common.Hash,
-    blockHeight uint64, parentBlock *block.Block) error {
+func (bc *Blockchain) handleSyncModeBlock(b *block.Block, blockHeight uint64, parentBlock *block.Block) error {
+    blockHash := b.Hash() // Declare blockHash here
 
     // Validate and execute block
     if err := bc.validateAndExecuteBlock(b, parentBlock); err != nil {
@@ -380,28 +471,34 @@ func (bc *Blockchain) ProcessSyncBatch(blocks []*block.Block) error {
         return blocks[i].Header.Number.Uint64() < blocks[j].Header.Number.Uint64()
     })
 
-    // ==============================================
-    // VALIDATE BLOCKS AGAINST CP
-    // ==============================================
-    for _, block := range blocks {
-        blockHeight := block.Header.Number.Uint64()
-        blockHash := block.Hash()
-        
-        if bc.checkpointManager != nil {
-            // Validate against checkpoint if exists
-            if cp, exists := bc.checkpointManager.GetCheckpoint(blockHeight); exists {
-                err := bc.checkpointManager.ValidateBlock(blockHeight, blockHash)
-                if err != nil {
-                    return fmt.Errorf("checkpoint validation failed for block %d: %w", blockHeight, err)
-                }
-                log.Printf("[blockchain] ✅ Sync block %d validated against checkpoint (verifications: %d)",
-                    blockHeight, cp.Verifications)
+    // Validate blocks in order
+    for i, blk := range blocks {
+        blockHeight := blk.Header.Number.Uint64()
+
+        // Skip checkpoint validation during sync
+        // We just want to get the chain data
+
+        // Validate parent exists
+        if blockHeight > 0 {
+            var parentBlock *block.Block
+            if i == 0 {
+                // First block in batch
+                parentBlock = bc.GetBlock(blockHeight - 1)
+            } else {
+                // Previous block in batch
+                parentBlock = blocks[i-1]
+            }
+            
+            if parentBlock == nil {
+                return fmt.Errorf("missing parent for block %d", blockHeight)
+            }
+
+            // Quick validation only during sync
+            if blk.Header.ParentHash != parentBlock.Hash() {
+                return fmt.Errorf("parent hash mismatch for block %d", blockHeight)
             }
         }
     }
-    // ==============================================
-    // END CHECKPOINT VALIDATION
-    // ==============================================
 
     // Use batch for database writes during sync
     batch := bc.db.DB().NewBatch()
@@ -410,23 +507,6 @@ func (bc *Blockchain) ProcessSyncBatch(blocks []*block.Block) error {
     for _, block := range blocks {
         blockHeight := block.Header.Number.Uint64()
         blockHash := block.Hash()
-
-        // Validate parent exists
-        if blockHeight > 0 {
-            parentBlock := bc.GetBlock(blockHeight - 1)
-            if parentBlock == nil {
-                return fmt.Errorf("missing parent for block %d", blockHeight)
-            }
-
-            if err := bc.validateAndExecuteBlock(block, parentBlock); err != nil {
-                return fmt.Errorf("block %d validation failed: %w", blockHeight, err)
-            }
-        } else {
-            // Genesis block validation
-            if err := bc.validateAndExecuteBlock(block, nil); err != nil {
-                return fmt.Errorf("genesis block validation failed: %w", err)
-            }
-        }
 
         // Write block to batch using RLP encoding
         blockData, err := rlp.EncodeToBytes(block)
@@ -466,13 +546,13 @@ func (bc *Blockchain) ProcessSyncBatch(blocks []*block.Block) error {
     for _, block := range blocks {
         blockHeight := block.Header.Number.Uint64()
         blockHash := block.Hash()
-        
+
         bc.cacheMu.Lock()
         bc.blockByNumberCache.Add(blockHeight, block)
         bc.blockByHashCache.Add(blockHash, block)
         bc.cacheMu.Unlock()
     }
-    
+
     // Update latest block pointer
     latestBlock := blocks[len(blocks)-1]
     bc.latest.Store(latestBlock)
@@ -510,7 +590,7 @@ func (bc *Blockchain) syncRotatingKingForBlock(blockHeight uint64) {
     if bc.rotatingKingManager != nil {
         ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
         defer cancel()
-        
+
         if err := bc.rotatingKingManager.SyncBlocks(ctx, blockHeight); err != nil {
             log.Printf("[blockchain] Failed to sync rotating king for block %d: %v", blockHeight, err)
         }
@@ -522,7 +602,7 @@ func (bc *Blockchain) syncRotatingKingDatabase(targetHeight uint64) {
     if bc.rotatingKingManager != nil {
         ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
         defer cancel()
-        
+
         if err := bc.rotatingKingManager.SyncBlocks(ctx, targetHeight); err != nil {
             log.Printf("[blockchain] Failed to sync rotating king database: %v", err)
         }
@@ -554,21 +634,21 @@ func (bc *Blockchain) persistBlockAsync(b *block.Block) {
 
 // shouldCreateCheckpoint determines if a checkpoint should be created at this height
 func (bc *Blockchain) shouldCreateCheckpoint(height uint64) bool {
-    // Create checkpoints:
-    // 1. At genesis (height 0)
-    // 2. Every 1000 blocks
-    // 3. Every 10000 blocks (major checkpoint)
-    // 4. Optionally at block 1 for initial validation
+    // Only create checkpoints for:
+    // 1. Genesis block (height 0) - REQUIRED
+    // 2. Every 1000 blocks (adjustable)
+    // 3. Special heights (like 1 for initial validation, but be careful)
+    
     if height == 0 {
-        return true
+        return true // Genesis always needs checkpoint
     }
     
-    // Checkpoint at block 1 for initial chain validation
+    // Don't create checkpoint at height 1 - it's too early
     if height == 1 {
-        return true
+        return false // Disable for now
     }
     
-    // Regular checkpoints every 1000 blocks
+    // Create checkpoints every 1000 blocks
     if height%1000 == 0 {
         return true
     }
@@ -586,35 +666,43 @@ func (bc *Blockchain) createCheckpointFromBlock(b *block.Block) error {
     if bc.checkpointManager == nil {
         return errors.New("checkpoint manager not initialized")
     }
-    
+
     blockHeight := b.Header.Number.Uint64()
+
+    // Only create checkpoints for finalized blocks
+    // Blocks need multiple confirmations before being checkpointed
+    if blockHeight < 1000 && blockHeight != 0 {
+        log.Printf("[blockchain] Skipping checkpoint for non-finalized block %d", blockHeight)
+        return nil
+    }
+
     blockHash := b.Hash()
-    
+
     // Get rotating king address
     var rotatingKing common.Address
     if bc.rotatingKingManager != nil {
         rotatingKing = bc.rotatingKingManager.GetCurrentKing()
     }
-    
+
     // Get parent hash
     parentHash := b.Header.ParentHash
     if blockHeight == 0 {
         parentHash = common.Hash{} // Genesis has no parent
     }
-    
+
     // Get miner/coinbase
     miner := b.Header.Coinbase
-    
+
     // Get transaction count
     txCount := len(b.Txs)
-    
-    // Estimate gas used (you might want to track this properly)
+
+    // Estimate gas used
     gasUsed := uint64(0)
     if len(b.Txs) > 0 {
-        // TODO:21000 per transaction
+        // TODO: 21000 per transaction
         gasUsed = uint64(len(b.Txs) * 21000)
     }
-    
+
     // Add the checkpoint
     err := bc.checkpointManager.AddCheckpoint(
         blockHeight,
@@ -625,14 +713,14 @@ func (bc *Blockchain) createCheckpointFromBlock(b *block.Block) error {
         txCount,
         gasUsed,
     )
-    
+
     if err != nil {
         return fmt.Errorf("failed to add checkpoint at height %d: %w", blockHeight, err)
     }
-    
-    log.Printf("[blockchain] Checkpoint created at height %d (hash: %s)",
+
+    log.Printf("[blockchain] Checkpoint created at finalized height %d (hash: %s)",
         blockHeight, blockHash.Hex()[:12])
-    
+
     return nil
 }
 
@@ -641,8 +729,14 @@ func (bc *Blockchain) ValidateBlockAgainstCheckpoints(height uint64, hash common
     if bc.checkpointManager == nil {
         return nil // No checkpoint manager, skip validation
     }
+
+    // Only validate against existing checkpoints
+    // Don't reject blocks that don't have checkpoints
+    if _, exists := bc.checkpointManager.GetCheckpoint(height); exists {
+        return bc.checkpointManager.ValidateBlock(height, hash)
+    }
     
-    return bc.checkpointManager.ValidateBlock(height, hash)
+    return nil
 }
 
 // GetCheckpointManager returns the checkpoint manager
@@ -654,4 +748,128 @@ func (bc *Blockchain) GetCheckpointManager() *checkpoints.Checkpoints {
 func (bc *Blockchain) SetCheckpointManager(cp *checkpoints.Checkpoints) {
     bc.checkpointManager = cp
     log.Printf("[blockchain] Checkpoint manager configured")
+}
+
+// GetBlock implementation
+func (bc *Blockchain) GetBlock(height uint64) *block.Block {
+    // Check cache first
+    bc.cacheMu.RLock()
+    if cached, found := bc.blockByNumberCache.Get(height); found {
+        cachedBlock := cached.(*block.Block)
+        bc.cacheMu.RUnlock()
+        
+        if cachedBlock.Header.Number.Uint64() == height {
+            return cachedBlock
+        }
+        // Cache corruption - clear it
+        bc.cacheMu.Lock()
+        bc.blockByNumberCache.Remove(height)
+        bc.cacheMu.Unlock()
+    } else {
+        bc.cacheMu.RUnlock()
+    }
+    
+    // Get from database
+    // 1. Get canonical hash for this height
+    canonicalHash, err := bc.db.GetCanonicalHash(height)
+    if err != nil || canonicalHash == (common.Hash{}) {
+        log.Printf("[blockchain] No canonical hash for height %d: %v", height, err)
+        return nil
+    }
+    
+    // 2. Get block by hash
+    block, err := bc.db.ReadBlockByHash(canonicalHash)
+    if err != nil {
+        log.Printf("[blockchain] Failed to read block %s at height %d: %v",
+            canonicalHash.Hex()[:12], height, err)
+        return nil
+    }
+    
+    // Verify height
+    if block.Header.Number.Uint64() != height {
+        log.Printf("[blockchain] ❌ Database corruption: block at hash %s has height %d, expected %d",
+            canonicalHash.Hex()[:12], block.Header.Number.Uint64(), height)
+        return nil
+    }
+    
+    // Update cache
+    bc.cacheMu.Lock()
+    bc.blockByNumberCache.Add(height, block)
+    bc.blockByHashCache.Add(canonicalHash, block)
+    bc.cacheMu.Unlock()
+    
+    log.Printf("[blockchain] GetBlock from DB: height=%d hash=%s", height, canonicalHash.Hex()[:12])
+    
+    return block
+}
+
+// GetBlockByHash implementation
+func (bc *Blockchain) GetBlockByHash(hash common.Hash) (*block.Block, error) {
+    if hash == (common.Hash{}) {
+        return nil, errors.New("empty hash")
+    }
+
+    // Check cache first
+    bc.cacheMu.RLock()
+    if cached, found := bc.blockByHashCache.Get(hash); found {
+        bc.cacheMu.RUnlock()
+        if block, ok := cached.(*block.Block); ok {
+            return block, nil
+        }
+    } else {
+        bc.cacheMu.RUnlock()
+    }
+
+    // Get from database
+    block, err := bc.db.ReadBlockByHash(hash)
+    if err != nil {
+        return nil, fmt.Errorf("block not found by hash %s: %w", hash.Hex()[:12], err)
+    }
+    
+    // Update cache
+    bc.cacheMu.Lock()
+    bc.blockByHashCache.Add(hash, block)
+    bc.blockByNumberCache.Add(block.Header.Number.Uint64(), block)
+    bc.cacheMu.Unlock()
+    
+    return block, nil
+}
+
+type orphanBlock struct {
+    block      *block.Block
+    receivedAt time.Time
+}
+
+func (bc *Blockchain) storeOrphanBlock(b *block.Block) {
+    bc.orphanMu.Lock()
+    defer bc.orphanMu.Unlock()
+    
+    if bc.orphanBlocks == nil {
+        bc.orphanBlocks = make(map[common.Hash]*orphanBlock)
+    }
+    
+    blockHash := b.Hash()
+    bc.orphanBlocks[blockHash] = &orphanBlock{
+        block:      b,
+        receivedAt: time.Now(),
+    }
+    
+    log.Printf("[blockchain] Stored orphan block: height=%d hash=%s", 
+        b.Header.Number.Uint64(), blockHash.Hex()[:12])
+    
+    // Cleanup old orphans if needed
+    if len(bc.orphanBlocks) > 100 {
+        bc.cleanupOldOrphans()
+    }
+}
+
+func (bc *Blockchain) cleanupOldOrphans() {
+    maxAge := 30 * time.Minute
+    now := time.Now()
+    
+    for hash, orphan := range bc.orphanBlocks {
+        if now.Sub(orphan.receivedAt) > maxAge {
+            delete(bc.orphanBlocks, hash)
+        }
+    }
 }

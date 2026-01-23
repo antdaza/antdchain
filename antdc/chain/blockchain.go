@@ -111,6 +111,8 @@ type Blockchain struct {
     reorgDepth           atomic.Uint64 // Maximum reorg depth allowed
     ancientStore         *AncientStore // For pruning old blocks
     finalizedHeight      atomic.Uint64 // Height considered finalized (no reorg beyond this)
+    orphanMu     sync.RWMutex
+    orphanBlocks map[common.Hash]*orphanBlock
 }
 
 // AncientStore handles storage of ancient (pruned) blocks
@@ -467,7 +469,7 @@ func (bc *Blockchain) Latest() *block.Block {
 }
 
 // GetBlock returns a block by number (convenience method)
-func (bc *Blockchain) GetBlock(number uint64) *block.Block {
+/*func (bc *Blockchain) GetBlock(number uint64) *block.Block {
     blk, err := bc.getBlockByNumber(number)
     if err != nil || blk == nil {
         return nil
@@ -520,7 +522,7 @@ func (bc *Blockchain) GetBlockByHash(hash common.Hash) (*block.Block, error) {
 
     return blk, nil
 }
-
+*/
 // HasBlock checks if a block exists by hash
 func (bc *Blockchain) HasBlock(hash common.Hash) bool {
     exists, err := bc.db.HasBlock(hash)

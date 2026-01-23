@@ -214,6 +214,7 @@ func NewBlockchain(statePath string, miner common.Address) (*Blockchain, error) 
 		reorgDepth:          atomic.Uint64{},
 		ancientStore:        nil,
 		finalizedHeight:     atomic.Uint64{},
+                orphanBlocks: make(map[common.Hash]*orphanBlock),
 	}
 
 	// Set atomic fields
